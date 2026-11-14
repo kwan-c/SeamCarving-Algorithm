@@ -37,6 +37,26 @@ Seam findVerticalSeamDP(const cv::Mat& energy);
 // guaranteed to be the cheapest. Time O(rows + cols), extra space O(rows) for the seam.
 Seam findVerticalSeamGreedy(const cv::Mat& energy);
 
+// Graph cut alternative to the DP. Builds a flow network with one node per pixel, runs
+// maximum flow (Edmonds-Karp), and reads the seam off the minimum cut: in each row the
+// seam pixel is the rightmost pixel on the source side. The result is a minimum-energy
+// seam, so its cost always equals the DP's; when several seams tie, the two algorithms
+// may pick different ones. Time O(V * E^2) with V = rows * cols + 2 and E about 4 * V,
+// which is far slower than the DP. (Implemented in seam_graph_cut.cpp.)
+Seam findVerticalSeamGraphCut(const cv::Mat& energy);
+
+// The same network and the same seam as findVerticalSeamGraphCut, but the maximum flow
+// is computed with Dinic's algorithm instead of Edmonds-Karp. Worst case O(V^2 * E),
+// and in practice much faster on these grid-shaped networks.
+Seam findVerticalSeamGraphCutDinic(const cv::Mat& energy);
+
+// The network exactly as the assignment brief words it, where every last-column pixel
+// is tied to the sink with infinite capacity. A pixel in the last column can then never
+// be the seam pixel, so this version finds the cheapest seam that avoids the last
+// column, which is not always the true minimum. Kept to demonstrate that difference;
+// needs at least two columns.
+Seam findVerticalSeamGraphCutAsDescribed(const cv::Mat& energy);
+
 // Sum of the energy values along a seam (used for testing and for comparing algorithms).
 double seamCost(const cv::Mat& energy, const Seam& seam);
 

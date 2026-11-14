@@ -12,7 +12,12 @@ endif()
 find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs)
 
 # The algorithms live in a library so the app and the tests share the same code.
-add_library(seamcarving src/seam_carving.cpp src/seam_overlay.cpp)
+add_library(seamcarving
+  src/seam_carving.cpp
+  src/seam_graph_cut.cpp
+  src/max_flow.cpp
+  src/seam_overlay.cpp
+)
 target_include_directories(seamcarving PUBLIC include ${OpenCV_INCLUDE_DIRS})
 target_link_libraries(seamcarving PUBLIC ${OpenCV_LIBS})
 if(NOT MSVC)
@@ -36,6 +41,14 @@ set(SEAM_CARVING_TESTS
   greedy_matches_dp_on_easy_input
   greedy_never_beats_dp
   greedy_edge_cases
+  maxflow_textbook_network
+  maxflow_simple_cases
+  maxflow_dinic_matches_edmonds_karp
+  graphcut_hand_worked_example
+  graphcut_matches_dp_cost
+  graphcut_edge_cases
+  graphcut_as_described_skips_last_column
+  graphcut_dinic_same_seam
   remove_vertical_seam
   energy_both_modes
   energy_equal_brightness_colour_edge

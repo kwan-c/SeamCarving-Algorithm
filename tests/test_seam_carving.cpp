@@ -21,6 +21,7 @@
 
 #include <opencv2/core.hpp>
 
+#include "max_flow.hpp"
 #include "seam_carving.hpp"
 #include "seam_overlay.hpp"
 
@@ -70,6 +71,13 @@ static double bruteForceMinSeamCost(const cv::Mat& energy) {
     double best = std::numeric_limits<double>::infinity();
     for (int j = 0; j < energy.cols; ++j) best = std::min(best, bruteForceCost(energy, 0, j));
     return best;
+}
+
+// A small noisy colour image: every pixel differs from its neighbours, so no seam is free.
+static cv::Mat makeNoiseImage() {
+    cv::Mat image(20, 30, CV_8UC3);
+    cv::randu(image, cv::Scalar(0, 0, 0), cv::Scalar(255, 255, 255));
+    return image;
 }
 
 // A worked example small enough to check by hand.
@@ -180,6 +188,241 @@ static void testGreedyEdgeCases() {
     CHECK((sc::findVerticalSeamGreedy(flat) == sc::Seam{0, 0, 0, 0, 0, 0}));
 }
 
+static const sc::MaxFlowAlgorithm bothMaxFlowAlgorithms[] = {
+    sc::MaxFlowAlgorithm::EdmondsKarp, sc::MaxFlowAlgorithm::Dinic};
+
+// The flow network from CLRS (Introduction to Algorithms), whose maximum flow is 23.
+// Nodes: 0 = s, 1..4 = v1..v4, 5 = t. Checked with both max-flow algorithms.
+static void testMaxFlowTextbookNetwork() {
+    for (sc::MaxFlowAlgorithm algorithm : bothMaxFlowAlgorithms) {
+        sc::FlowNetwork network(6);
+        network.addEdge(0, 1, 16);
+        network.addEdge(0, 2, 13);
+        network.addEdge(1, 3, 12);
+        network.addEdge(2, 1, 4);
+        network.addEdge(2, 4, 14);
+        network.addEdge(3, 2, 9);
+        network.addEdge(3, 5, 20);
+        network.addEdge(4, 3, 7);
+        network.addEdge(4, 5, 4);
+        CHECK(network.maxFlow(0, 5, algorithm) == 23.0);
+
+        // The minimum cut separates {s, v1, v2, v4} from {v3, t}.
+        // The edges leaving that set are v1->v3 (12), v4->v3 (7) and v4->t (4): 23 in total.
+        const std::vector<bool> side = network.sourceSide(0);
+        CHECK((side == std::vector<bool>{true, true, true, false, true, false}));
+    }
+}
+
+static void testMaxFlowSimpleCases() {
+    for (sc::MaxFlowAlgorithm algorithm : bothMaxFlowAlgorithms) {
+        // A single edge carries exactly its capacity.
+        sc::FlowNetwork single(2);
+        single.addEdge(0, 1, 5);
+        CHECK(single.maxFlow(0, 1, algorithm) == 5.0);
+
+        // A chain is limited by its narrowest edge.
+        sc::FlowNetwork chain(4);
+        chain.addEdge(0, 1, 7);
+        chain.addEdge(1, 2, 3);
+        chain.addEdge(2, 3, 9);
+        CHECK(chain.maxFlow(0, 3, algorithm) == 3.0);
+        CHECK((chain.sourceSide(0) == std::vector<bool>{true, true, false, false}));
+
+        // Two separate routes add up, and so do two parallel edges.
+        sc::FlowNetwork parallel(4);
+        parallel.addEdge(0, 1, 4);
+        parallel.addEdge(1, 3, 4);
+        parallel.addEdge(0, 2, 6);
+        parallel.addEdge(2, 3, 5);
+        parallel.addEdge(0, 3, 1);
+        parallel.addEdge(0, 3, 2);
+        CHECK(parallel.maxFlow(0, 3, algorithm) == 4.0 + 5.0 + 1.0 + 2.0);
+
+        // The classic case that needs a reverse edge: a path may use the middle edge
+        // 1->2 first, and the algorithm must be able to send that flow back.
+        sc::FlowNetwork diamond(4);
+        diamond.addEdge(0, 1, 1);
+        diamond.addEdge(0, 2, 1);
+        diamond.addEdge(1, 2, 1);
+        diamond.addEdge(1, 3, 1);
+        diamond.addEdge(2, 3, 1);
+        CHECK(diamond.maxFlow(0, 3, algorithm) == 2.0);
+
+        // No route from source to sink: zero flow, and the sink is not on the source side.
+        sc::FlowNetwork disconnected(3);
+        disconnected.addEdge(0, 1, 5);
+        CHECK(disconnected.maxFlow(0, 2, algorithm) == 0.0);
+        CHECK((disconnected.sourceSide(0) == std::vector<bool>{true, true, false}));
+
+        // Source and sink the same node: nothing to push.
+        CHECK(single.maxFlow(1, 1, algorithm) == 0.0);
+    }
+
+    // Invalid edges are rejected.
+    sc::FlowNetwork network(2);
+    bool threwRange = false, threwNegative = false;
+    try { network.addEdge(0, 7, 1); } catch (const std::invalid_argument&) { threwRange = true; }
+    try { network.addEdge(0, 1, -1); } catch (const std::invalid_argument&) { threwNegative = true; }
+    CHECK(threwRange && threwNegative);
+}
+
+// Random networks: the two algorithms must agree on the flow value and on the minimum
+// cut. (The set of nodes still reachable from the source is the same for every maximum
+// flow, so the two source sides must be identical, not merely equally cheap.)
+static void testMaxFlowDinicMatchesEdmondsKarp() {
+    std::mt19937 rng(4242);
+    std::uniform_int_distribution<int> nodesDist(2, 12), capacity(0, 20);
+    for (int trial = 0; trial < 500; ++trial) {
+        const int nodes = nodesDist(rng);
+        std::uniform_int_distribution<int> pick(0, nodes - 1);
+        std::uniform_int_distribution<int> edgeCountDist(0, nodes * 3);
+        const int edgeCount = edgeCountDist(rng);
+
+        sc::FlowNetwork forEdmondsKarp(nodes), forDinic(nodes);
+        for (int e = 0; e < edgeCount; ++e) {
+            const int from = pick(rng), to = pick(rng), cap = capacity(rng);
+            forEdmondsKarp.addEdge(from, to, cap);
+            forDinic.addEdge(from, to, cap);
+        }
+        const int source = 0, sink = nodes - 1;
+        CHECK(forEdmondsKarp.maxFlow(source, sink, sc::MaxFlowAlgorithm::EdmondsKarp) ==
+              forDinic.maxFlow(source, sink, sc::MaxFlowAlgorithm::Dinic));
+        CHECK(forEdmondsKarp.sourceSide(source) == forDinic.sourceSide(source));
+    }
+}
+
+// Swapping the max-flow algorithm must not change the seam at all.
+static void testGraphCutDinicSameSeam() {
+    // The hand-worked example: cost 4 through the last column.
+    const cv::Mat example = makeEnergy({{1, 2, 9},
+                                        {9, 9, 1},
+                                        {9, 9, 1}});
+    CHECK((sc::findVerticalSeamGraphCutDinic(example) == sc::Seam{1, 2, 2}));
+
+    std::mt19937 rng(31337);
+    std::uniform_int_distribution<int> size(1, 12);
+    std::uniform_int_distribution<int> value(0, 9);
+    for (int trial = 0; trial < 500; ++trial) {
+        cv::Mat energy(size(rng), size(rng), CV_64F);
+        for (int i = 0; i < energy.rows; ++i)
+            for (int j = 0; j < energy.cols; ++j)
+                energy.at<double>(i, j) = value(rng);
+
+        const sc::Seam dinic = sc::findVerticalSeamGraphCutDinic(energy);
+        CHECK(isValidSeam(dinic, energy.rows, energy.cols));
+        CHECK(dinic == sc::findVerticalSeamGraphCut(energy));  // identical seam
+        CHECK(sc::seamCost(energy, dinic) == sc::seamCost(energy, sc::findVerticalSeamDP(energy)));
+    }
+
+    // And on real energy maps, including an all-zero one.
+    const cv::Mat imageEnergy = sc::computeEnergy(makeNoiseImage());
+    CHECK(sc::findVerticalSeamGraphCutDinic(imageEnergy) == sc::findVerticalSeamGraphCut(imageEnergy));
+    const cv::Mat zero = cv::Mat::zeros(4, 6, CV_64F);
+    CHECK(sc::findVerticalSeamGraphCutDinic(zero) == sc::findVerticalSeamGraphCut(zero));
+    CHECK((sc::findVerticalSeamGraphCutDinic(makeEnergy({{5}, {7}, {3}})) == sc::Seam{0, 0, 0}));
+}
+
+// The same matrix as the DP hand-worked example. Graph cut is optimal, so it must
+// find the cost-4 seam, which runs through the last column in rows 1 and 2.
+static void testGraphCutHandWorkedExample() {
+    const cv::Mat energy = makeEnergy({{1, 2, 9},
+                                       {9, 9, 1},
+                                       {9, 9, 1}});
+    const sc::Seam seam = sc::findVerticalSeamGraphCut(energy);
+    CHECK((seam == sc::Seam{1, 2, 2}));
+    CHECK(sc::seamCost(energy, seam) == 4.0);
+}
+
+// Graph cut and DP are both optimal, so on any input their seams must cost the same.
+// The seams themselves may differ when several seams tie, so only the cost is compared.
+static void testGraphCutMatchesDPCost() {
+    std::mt19937 rng(777);
+    std::uniform_int_distribution<int> size(1, 10);
+    std::uniform_int_distribution<int> value(0, 9);
+    for (int trial = 0; trial < 500; ++trial) {
+        cv::Mat energy(size(rng), size(rng), CV_64F);
+        for (int i = 0; i < energy.rows; ++i)
+            for (int j = 0; j < energy.cols; ++j)
+                energy.at<double>(i, j) = value(rng);
+
+        const sc::Seam cut = sc::findVerticalSeamGraphCut(energy);
+        CHECK(isValidSeam(cut, energy.rows, energy.cols));
+        CHECK(sc::seamCost(energy, cut) == sc::seamCost(energy, sc::findVerticalSeamDP(energy)));
+    }
+
+    // The same on a real energy map: Sobel energy of a noisy colour image.
+    const cv::Mat imageEnergy = sc::computeEnergy(makeNoiseImage());
+    const sc::Seam cut = sc::findVerticalSeamGraphCut(imageEnergy);
+    CHECK(isValidSeam(cut, imageEnergy.rows, imageEnergy.cols));
+    CHECK(sc::seamCost(imageEnergy, cut) ==
+          sc::seamCost(imageEnergy, sc::findVerticalSeamDP(imageEnergy)));
+}
+
+static void testGraphCutEdgeCases() {
+    // Single column: the only possible seam.
+    CHECK((sc::findVerticalSeamGraphCut(makeEnergy({{5}, {7}, {3}})) == sc::Seam{0, 0, 0}));
+
+    // Single row: the smallest pixel, including when it is in the last column.
+    CHECK((sc::findVerticalSeamGraphCut(makeEnergy({{4, 2, 8, 1, 6}})) == sc::Seam{3}));
+    CHECK((sc::findVerticalSeamGraphCut(makeEnergy({{4, 2, 8, 6, 1}})) == sc::Seam{4}));
+
+    // Two columns, where the best seam zigzags between them.
+    CHECK((sc::findVerticalSeamGraphCut(makeEnergy({{1, 9}, {9, 1}, {1, 9}})) == sc::Seam{0, 1, 0}));
+
+    // Uniform energy: every seam ties, so only validity and cost are checked.
+    const cv::Mat flat = cv::Mat::ones(6, 5, CV_64F);
+    const sc::Seam flatSeam = sc::findVerticalSeamGraphCut(flat);
+    CHECK(isValidSeam(flatSeam, 6, 5));
+    CHECK(sc::seamCost(flat, flatSeam) == 6.0);
+
+    // All-zero energy: no flow at all can be pushed, and the seam must still be valid.
+    const cv::Mat zero = cv::Mat::zeros(4, 6, CV_64F);
+    CHECK(isValidSeam(sc::findVerticalSeamGraphCut(zero), 4, 6));
+}
+
+// The network exactly as the assignment brief describes it cannot remove a last-column
+// pixel. Brute force over the seams that avoid the last column gives what it should find.
+static void testGraphCutAsDescribedSkipsLastColumn() {
+    // On the hand-worked example the true best seam (cost 4) needs the last column,
+    // so the as-described network is forced onto a much worse seam.
+    const cv::Mat energy = makeEnergy({{1, 2, 9},
+                                       {9, 9, 1},
+                                       {9, 9, 1}});
+    const sc::Seam described = sc::findVerticalSeamGraphCutAsDescribed(energy);
+    CHECK(isValidSeam(described, 3, 3));
+    CHECK(sc::seamCost(energy, described) == 19.0);
+    for (int col : described) CHECK(col != 2);
+
+    // In general it equals the best seam of the image without its last column,
+    // and is therefore never cheaper than the true minimum.
+    std::mt19937 rng(99);
+    std::uniform_int_distribution<int> rowsDist(1, 6), colsDist(2, 6), value(0, 9);
+    int strictlyWorse = 0;
+    for (int trial = 0; trial < 300; ++trial) {
+        cv::Mat full(rowsDist(rng), colsDist(rng), CV_64F);
+        for (int i = 0; i < full.rows; ++i)
+            for (int j = 0; j < full.cols; ++j)
+                full.at<double>(i, j) = value(rng);
+
+        const sc::Seam seam = sc::findVerticalSeamGraphCutAsDescribed(full);
+        const double cost = sc::seamCost(full, seam);
+        const cv::Mat withoutLast = full.colRange(0, full.cols - 1).clone();
+        CHECK(isValidSeam(seam, withoutLast.rows, withoutLast.cols));  // never the last column
+        CHECK(cost == bruteForceMinSeamCost(withoutLast));
+        const double best = bruteForceMinSeamCost(full);
+        CHECK(cost >= best);
+        if (cost > best) ++strictlyWorse;
+    }
+    CHECK(strictlyWorse > 0);
+
+    // A single column leaves it nothing it is allowed to remove.
+    bool threw = false;
+    try { sc::findVerticalSeamGraphCutAsDescribed(makeEnergy({{5}, {7}})); }
+    catch (const std::invalid_argument&) { threw = true; }
+    CHECK(threw);
+}
+
 // After removal, each row must be the original row with exactly the seam pixel missing.
 static void testRemoveVerticalSeam() {
     cv::Mat image(3, 4, CV_8UC3);
@@ -252,13 +495,6 @@ static void testEqualBrightnessColourEdge() {
     for (int col : seam) CHECK(col != 4 && col != 5);
 }
 
-// A small noisy colour image: every pixel differs from its neighbours, so no seam is free.
-static cv::Mat makeNoiseImage() {
-    cv::Mat image(20, 30, CV_8UC3);
-    cv::randu(image, cv::Scalar(0, 0, 0), cv::Scalar(255, 255, 255));
-    return image;
-}
-
 static void testResizeReachesTargetSize() {
     const cv::Mat image = makeNoiseImage();
 
@@ -283,6 +519,15 @@ static void testResizeReachesTargetSize() {
     // The greedy finder plugs into the same loop and reaches the same target size.
     const cv::Mat greedyResult = sc::seamCarve(image, 17, 9, sc::findVerticalSeamGreedy);
     CHECK(greedyResult.cols == 17 && greedyResult.rows == 9 && greedyResult.type() == image.type());
+
+    // So does the graph cut finder, with either max-flow algorithm; because the two
+    // always find the same seam, the whole resized image must come out identical.
+    const cv::Mat dinicResult = sc::seamCarve(image, 17, 9, sc::findVerticalSeamGraphCutDinic);
+    const cv::Mat graphCutResult = sc::seamCarve(image, 17, 9, sc::findVerticalSeamGraphCut);
+    CHECK(graphCutResult.cols == 17 && graphCutResult.rows == 9 &&
+          graphCutResult.type() == image.type());
+    CHECK(dinicResult.size() == graphCutResult.size() &&
+          cv::norm(dinicResult, graphCutResult, cv::NORM_INF) == 0.0);
 
     // Carving all the way down to a single pixel must not crash.
     const cv::Mat tiny = sc::seamCarve(image, 1, 1);
@@ -461,6 +706,14 @@ static const std::vector<TestCase> allTests = {
     {"greedy_matches_dp_on_easy_input",     testGreedyMatchesDPOnEasyInput},
     {"greedy_never_beats_dp",               testGreedyAgainstDP},
     {"greedy_edge_cases",                   testGreedyEdgeCases},
+    {"maxflow_textbook_network",            testMaxFlowTextbookNetwork},
+    {"maxflow_simple_cases",                testMaxFlowSimpleCases},
+    {"maxflow_dinic_matches_edmonds_karp",  testMaxFlowDinicMatchesEdmondsKarp},
+    {"graphcut_hand_worked_example",        testGraphCutHandWorkedExample},
+    {"graphcut_matches_dp_cost",            testGraphCutMatchesDPCost},
+    {"graphcut_edge_cases",                 testGraphCutEdgeCases},
+    {"graphcut_as_described_skips_last_column", testGraphCutAsDescribedSkipsLastColumn},
+    {"graphcut_dinic_same_seam",            testGraphCutDinicSameSeam},
     {"remove_vertical_seam",                testRemoveVerticalSeam},
     {"energy_both_modes",                   testComputeEnergy},
     {"energy_equal_brightness_colour_edge", testEqualBrightnessColourEdge},
