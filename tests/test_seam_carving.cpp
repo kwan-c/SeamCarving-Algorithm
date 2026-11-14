@@ -22,6 +22,7 @@
 #include <opencv2/core.hpp>
 
 #include "seam_carving.hpp"
+#include "seam_overlay.hpp"
 
 static int failures = 0;
 
@@ -313,6 +314,137 @@ static void testResizeRejectsInvalidInput() {
     CHECK(threwTooWide && threwZero && threwEmpty);
 }
 
+// The observer must be called once per seam, in order, with the image as it is at that moment.
+static void testResizeObserverSeesEverySeam() {
+    const cv::Mat image = makeNoiseImage();  // 20 rows x 30 columns
+    int verticalCalls = 0, horizontalCalls = 0;
+    bool shapesCorrect = true, seamsValid = true, verticalBeforeHorizontal = true;
+
+    const sc::SeamObserver observer = [&](const cv::Mat& current, const sc::Seam& seam,
+                                          bool horizontal) {
+        if (!horizontal) {
+            // Width pass: 20 rows, and one column fewer each time, starting from 30.
+            if (horizontalCalls > 0) verticalBeforeHorizontal = false;
+            if (current.rows != 20 || current.cols != 30 - verticalCalls) shapesCorrect = false;
+            ++verticalCalls;
+        } else {
+            // Height pass on the transposed image: 17 rows (the new width), and one
+            // column fewer each time, starting from 20 (the original height).
+            if (current.rows != 17 || current.cols != 20 - horizontalCalls) shapesCorrect = false;
+            ++horizontalCalls;
+        }
+        if (!isValidSeam(seam, current.rows, current.cols)) seamsValid = false;
+    };
+
+    sc::seamCarve(image, 17, 9, sc::findVerticalSeamDP, sc::EnergyMode::PerChannel, nullptr, observer);
+    CHECK(verticalCalls == 13 && horizontalCalls == 11);
+    CHECK(shapesCorrect && seamsValid && verticalBeforeHorizontal);
+}
+
+// A noisy image that contains neither of the two paint colours, so that
+// "is this pixel painted?" can be answered just by looking at its colour.
+static cv::Mat makePaintFreeImage() {
+    cv::Mat image(20, 30, CV_8UC3);
+    cv::randu(image, cv::Scalar(0, 0, 0), cv::Scalar(200, 200, 200));  // every channel below 200
+    return image;
+}
+
+static int countColour(const cv::Mat& image, const cv::Vec3b& colour) {
+    int count = 0;
+    for (int i = 0; i < image.rows; ++i)
+        for (int j = 0; j < image.cols; ++j)
+            if (image.at<cv::Vec3b>(i, j) == colour) ++count;
+    return count;
+}
+
+// Width only: 8 vertical seams, each taking exactly one pixel from every row.
+static void testOverlayVerticalSeams() {
+    const cv::Mat image = makePaintFreeImage();
+    cv::Mat overlay;
+    sc::seamCarveWithOverlay(image, 22, 20, overlay);
+
+    CHECK(overlay.size() == image.size() && overlay.type() == CV_8UC3);  // original size
+    CHECK(countColour(overlay, sc::kVerticalSeamColour) == 20 * 8);
+    CHECK(countColour(overlay, sc::kHorizontalSeamColour) == 0);
+
+    for (int i = 0; i < overlay.rows; ++i) {
+        int paintedInRow = 0;
+        for (int j = 0; j < overlay.cols; ++j) {
+            if (overlay.at<cv::Vec3b>(i, j) == sc::kVerticalSeamColour) {
+                ++paintedInRow;
+            } else {
+                // Every pixel that was not removed still shows the original picture.
+                CHECK(overlay.at<cv::Vec3b>(i, j) == image.at<cv::Vec3b>(i, j));
+            }
+        }
+        CHECK(paintedInRow == 8);
+    }
+}
+
+// Width 30 -> 22 (8 vertical seams over 20 rows), then height 20 -> 13
+// (7 horizontal seams over the 22 columns that are left).
+static void testOverlayBothDirections() {
+    const cv::Mat image = makePaintFreeImage();
+    cv::Mat overlay;
+    const cv::Mat resized = sc::seamCarveWithOverlay(image, 22, 13, overlay);
+
+    const int red = countColour(overlay, sc::kVerticalSeamColour);
+    const int yellow = countColour(overlay, sc::kHorizontalSeamColour);
+    CHECK(red == 20 * 8);
+    CHECK(yellow == 22 * 7);
+
+    // Painted pixels are exactly the removed ones, so the rest add up to the new image.
+    CHECK(overlay.rows * overlay.cols - red - yellow == resized.rows * resized.cols);
+
+    // The same check with the greedy finder, to show the overlay works for any algorithm.
+    cv::Mat greedyOverlay;
+    sc::seamCarveWithOverlay(image, 22, 13, greedyOverlay, sc::findVerticalSeamGreedy);
+    CHECK(countColour(greedyOverlay, sc::kVerticalSeamColour) == 20 * 8);
+    CHECK(countColour(greedyOverlay, sc::kHorizontalSeamColour) == 22 * 7);
+}
+
+// Drawing the seams must not change which seams are removed.
+static void testOverlayMatchesPlainResize() {
+    const cv::Mat image = makePaintFreeImage();
+    sc::CarveStats plainStats, overlayStats;
+    const cv::Mat plain = sc::seamCarve(image, 19, 12, sc::findVerticalSeamDP,
+                                        sc::EnergyMode::PerChannel, &plainStats);
+    cv::Mat overlay;
+    const cv::Mat withOverlay = sc::seamCarveWithOverlay(image, 19, 12, overlay,
+                                                         sc::findVerticalSeamDP,
+                                                         sc::EnergyMode::PerChannel, &overlayStats);
+    CHECK(plain.size() == withOverlay.size());
+    CHECK(cv::norm(plain, withOverlay, cv::NORM_INF) == 0.0);
+    CHECK(plainStats.seamsRemoved == overlayStats.seamsRemoved);
+    CHECK(plainStats.totalSeamEnergy == overlayStats.totalSeamEnergy);
+
+    // Removing nothing paints nothing.
+    cv::Mat untouched;
+    sc::seamCarveWithOverlay(image, 30, 20, untouched);
+    CHECK(cv::norm(untouched, image, cv::NORM_INF) == 0.0);
+}
+
+static void testOverlayInputChecks() {
+    // A grayscale image is accepted, and its overlay is in colour so the paint shows.
+    cv::Mat gray(10, 12, CV_8UC1);
+    cv::randu(gray, cv::Scalar(0), cv::Scalar(200));
+    cv::Mat overlay;
+    const cv::Mat resized = sc::seamCarveWithOverlay(gray, 9, 10, overlay);
+    CHECK(resized.cols == 9 && resized.type() == CV_8UC1);
+    CHECK(overlay.type() == CV_8UC3 && overlay.size() == gray.size());
+    CHECK(countColour(overlay, sc::kVerticalSeamColour) == 10 * 3);
+
+    // Empty images, unsupported pixel types and invalid targets are rejected.
+    bool threwEmpty = false, threwType = false, threwTarget = false;
+    try { sc::seamCarveWithOverlay(cv::Mat(), 1, 1, overlay); }
+    catch (const std::invalid_argument&) { threwEmpty = true; }
+    try { sc::seamCarveWithOverlay(cv::Mat(5, 5, CV_32FC3, cv::Scalar(0, 0, 0)), 4, 5, overlay); }
+    catch (const std::invalid_argument&) { threwType = true; }
+    try { sc::seamCarveWithOverlay(makePaintFreeImage(), 31, 20, overlay); }
+    catch (const std::invalid_argument&) { threwTarget = true; }
+    CHECK(threwEmpty && threwType && threwTarget);
+}
+
 // ---------------------------------------------------------------------------
 // Test list and runner
 // ---------------------------------------------------------------------------
@@ -335,6 +467,11 @@ static const std::vector<TestCase> allTests = {
     {"resize_reaches_target_size",          testResizeReachesTargetSize},
     {"resize_statistics",                   testResizeStatistics},
     {"resize_rejects_invalid_input",        testResizeRejectsInvalidInput},
+    {"resize_observer_sees_every_seam",     testResizeObserverSeesEverySeam},
+    {"overlay_vertical_seams",              testOverlayVerticalSeams},
+    {"overlay_both_directions",             testOverlayBothDirections},
+    {"overlay_matches_plain_resize",        testOverlayMatchesPlainResize},
+    {"overlay_input_checks",                testOverlayInputChecks},
 };
 
 // Used by the CTest entry "test_list_is_complete": succeeds only if the names passed in

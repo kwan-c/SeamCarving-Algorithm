@@ -5,6 +5,7 @@
 //   greedy  find seams by the greedy row-by-row rule
 //   rgb     energy from Sobel on each colour channel, summed (default)
 //   gray    energy from Sobel on the grayscale image
+//   seams=<image>  also save the original image with every removed seam painted on it
 
 #include <chrono>
 #include <cstdlib>
@@ -18,14 +19,18 @@
 #include <opencv2/imgcodecs.hpp>
 
 #include "seam_carving.hpp"
+#include "seam_overlay.hpp"
 
 static void printUsage(const char* program) {
     std::cerr << "Usage: " << program
-              << " <input> <output> <target width> <target height> [dp|greedy] [rgb|gray]\n"
+              << " <input> <output> <target width> <target height>"
+              << " [dp|greedy] [rgb|gray] [seams=<image>]\n"
               << "  dp      find seams by dynamic programming (default)\n"
               << "  greedy  find seams by the greedy row-by-row rule\n"
               << "  rgb     energy from each colour channel, summed (default)\n"
               << "  gray    energy from the grayscale image\n"
+              << "  seams=<image>  also save the original image with the removed seams painted\n"
+              << "                 on it (vertical seams red, horizontal seams yellow)\n"
               << "The output folder is created if it does not exist.\n"
               << "An existing output file is overwritten, with a warning.\n";
 }
@@ -74,7 +79,7 @@ static bool ensureOutputFolder(const std::string& outputPath) {
 }
 
 int main(int argc, char** argv) {
-    if (argc < 5 || argc > 7) {  // four required arguments plus at most two options
+    if (argc < 5 || argc > 8) {  // four required arguments plus at most three options
         printUsage(argv[0]);
         return EXIT_FAILURE;
     }
@@ -87,6 +92,8 @@ int main(int argc, char** argv) {
     std::string algorithmName = "dp";
     sc::EnergyMode energyMode = sc::EnergyMode::PerChannel;
     std::string energyName = "rgb";
+    std::string seamsPath;  // empty means "do not save a seam overlay"
+    const std::string seamsPrefix = "seams=";
 
     // Every argument after the first four is an option keyword, in any order.
     for (int i = 5; i < argc; ++i) {
@@ -103,6 +110,12 @@ int main(int argc, char** argv) {
         } else if (option == "gray") {
             energyMode = sc::EnergyMode::Grayscale;
             energyName = option;
+        } else if (option.compare(0, seamsPrefix.size(), seamsPrefix) == 0) {
+            seamsPath = option.substr(seamsPrefix.size());  // the text after "seams="
+            if (seamsPath.empty()) {
+                std::cerr << "seams= needs a file name, for example seams=out/seams.png\n";
+                return EXIT_FAILURE;
+            }
         } else {
             std::cerr << "Unknown option: " << option << "\n";
             printUsage(argv[0]);
@@ -118,6 +131,22 @@ int main(int argc, char** argv) {
         return EXIT_FAILURE;
     }
 
+    // The seam overlay is a second output image, so it gets the same checks.
+    const bool saveSeams = !seamsPath.empty();
+    if (saveSeams) {
+        if (!cv::haveImageWriter(seamsPath)) {
+            std::cerr << "Unsupported seam image name: " << seamsPath
+                      << " (use an extension such as .png or .jpg)\n";
+            return EXIT_FAILURE;
+        }
+        // Compare the paths after tidying them up, so "out/a.png" and "out/./a.png" match.
+        if (std::filesystem::path(seamsPath).lexically_normal() ==
+            std::filesystem::path(outputPath).lexically_normal()) {
+            std::cerr << "The seam image and the output image must be different files\n";
+            return EXIT_FAILURE;
+        }
+    }
+
     const cv::Mat image = cv::imread(inputPath, cv::IMREAD_COLOR);  // always 8-bit BGR
     if (image.empty()) {
         std::cerr << "Could not read image: " << inputPath << "\n";
@@ -126,15 +155,23 @@ int main(int argc, char** argv) {
 
     // Warn before the (possibly long) carving starts, so the run can still be cancelled.
     warnIfOverwriting(inputPath, outputPath);
+    if (saveSeams) {
+        warnIfOverwriting(inputPath, seamsPath);
+    }
 
     try {
         const int targetWidth = std::stoi(argv[3]);
         const int targetHeight = std::stoi(argv[4]);
 
         const auto start = std::chrono::steady_clock::now();
+        // With seams=, the same resize also paints each removed seam onto `overlay`.
+        // The bookkeeping for that adds a little time, so leave seams= off when timing.
         sc::CarveStats stats;
-        const cv::Mat result = sc::seamCarve(image, targetWidth, targetHeight,
-                                             findSeam, energyMode, &stats);
+        cv::Mat overlay;
+        const cv::Mat result = saveSeams
+            ? sc::seamCarveWithOverlay(image, targetWidth, targetHeight, overlay,
+                                       findSeam, energyMode, &stats)
+            : sc::seamCarve(image, targetWidth, targetHeight, findSeam, energyMode, &stats);
         const auto stop = std::chrono::steady_clock::now();
         const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start).count();
 
@@ -152,6 +189,18 @@ int main(int argc, char** argv) {
                   << ", energy: " << energyName << ")\n"
                   << stats.seamsRemoved << " seams removed, total seam energy "
                   << std::fixed << std::setprecision(0) << stats.totalSeamEnergy << "\n";
+
+        if (saveSeams) {
+            if (!ensureOutputFolder(seamsPath)) {
+                return EXIT_FAILURE;
+            }
+            if (!cv::imwrite(seamsPath, overlay)) {
+                std::cerr << "Could not write image: " << seamsPath << "\n";
+                return EXIT_FAILURE;
+            }
+            std::cout << "Seams painted on the original image: " << seamsPath
+                      << " (vertical red, horizontal yellow)\n";
+        }
     } catch (const std::exception& error) {
         std::cerr << "Error: " << error.what() << "\n";
         return EXIT_FAILURE;

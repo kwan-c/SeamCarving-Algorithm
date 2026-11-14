@@ -12,7 +12,7 @@ endif()
 find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs)
 
 # The algorithms live in a library so the app and the tests share the same code.
-add_library(seamcarving src/seam_carving.cpp)
+add_library(seamcarving src/seam_carving.cpp src/seam_overlay.cpp)
 target_include_directories(seamcarving PUBLIC include ${OpenCV_INCLUDE_DIRS})
 target_link_libraries(seamcarving PUBLIC ${OpenCV_LIBS})
 if(NOT MSVC)
@@ -42,6 +42,11 @@ set(SEAM_CARVING_TESTS
   resize_reaches_target_size
   resize_statistics
   resize_rejects_invalid_input
+  resize_observer_sees_every_seam
+  overlay_vertical_seams
+  overlay_both_directions
+  overlay_matches_plain_resize
+  overlay_input_checks
 )
 foreach(test_name IN LISTS SEAM_CARVING_TESTS)
   add_test(NAME ${test_name} COMMAND test_seam_carving ${test_name})

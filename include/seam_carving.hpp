@@ -49,13 +49,25 @@ struct CarveStats {
     double totalSeamEnergy = 0.0;  // sum of seamCost over every removed seam
 };
 
+// An optional function that seamCarve calls once for every seam, just before removing it.
+// It lets other code watch the resize (for example to draw the seams) without the
+// resize loop knowing anything about drawing.
+//   image       the current image, oriented so that the seam is vertical; while
+//               horizontal seams are being removed this is the transposed image
+//   seam        the seam that is about to be removed from `image`
+//   horizontal  false during the width pass, true during the height pass
+using SeamObserver =
+    std::function<void(const cv::Mat& image, const Seam& seam, bool horizontal)>;
+
 // Shrinks the image to targetWidth x targetHeight by repeatedly removing seams.
 // Vertical seams are removed first, then horizontal seams (via the transposed image).
 // Throws std::invalid_argument if the target is larger than the image or smaller than 1.
 // If `stats` is not null, it is reset and filled in with the totals for this resize.
+// If `observer` is set, it is called once per seam as described above.
 cv::Mat seamCarve(const cv::Mat& image, int targetWidth, int targetHeight,
                   const SeamFinder& findSeam = findVerticalSeamDP,
                   EnergyMode energyMode = EnergyMode::PerChannel,
-                  CarveStats* stats = nullptr);
+                  CarveStats* stats = nullptr,
+                  const SeamObserver& observer = nullptr);
 
 }  // namespace sc
