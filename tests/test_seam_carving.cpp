@@ -690,6 +690,120 @@ static void testOverlayInputChecks() {
     CHECK(threwEmpty && threwType && threwTarget);
 }
 
+// The overlay must hand every seam on to a second observer, unchanged.
+static void testOverlayPassesSeamsOn() {
+    const cv::Mat image = makePaintFreeImage();  // 20 rows x 30 columns
+    int vertical = 0, horizontal = 0;
+    bool seamsValid = true;
+    const sc::SeamObserver counter = [&](const cv::Mat& current, const sc::Seam& seam,
+                                         bool isHorizontal) {
+        if (isHorizontal) ++horizontal; else ++vertical;
+        if (!isValidSeam(seam, current.rows, current.cols)) seamsValid = false;
+    };
+    cv::Mat overlay;
+    sc::seamCarveWithOverlay(image, 22, 13, overlay, sc::findVerticalSeamDP,
+                             sc::EnergyMode::PerChannel, nullptr, counter);
+    CHECK(vertical == 8 && horizontal == 7);
+    CHECK(seamsValid);
+    // The overlay itself is still painted as before.
+    CHECK(countColour(overlay, sc::kVerticalSeamColour) == 20 * 8);
+}
+
+// A frame for a vertical seam: the picture in the top-left corner of the canvas with
+// exactly one red pixel per row, and the background colour everywhere else.
+static void testFrameShowsVerticalSeam() {
+    cv::Mat image(4, 5, CV_8UC3);
+    cv::randu(image, cv::Scalar(60, 60, 60), cv::Scalar(200, 200, 200));  // no paint or background colours
+    const sc::Seam seam = {0, 1, 2, 1};
+    const cv::Mat frame = sc::drawSeamFrame(image, seam, false, cv::Size(8, 6));  // 8 wide, 6 high
+
+    CHECK(frame.cols == 8 && frame.rows == 6 && frame.type() == CV_8UC3);
+    CHECK(countColour(frame, sc::kVerticalSeamColour) == 4);
+    CHECK(countColour(frame, sc::kHorizontalSeamColour) == 0);
+    CHECK(countColour(frame, sc::kFrameBackgroundColour) == 8 * 6 - 5 * 4);
+    for (int i = 0; i < image.rows; ++i) {
+        for (int j = 0; j < image.cols; ++j) {
+            if (j == seam[i]) {
+                CHECK(frame.at<cv::Vec3b>(i, j) == sc::kVerticalSeamColour);
+            } else {
+                CHECK(frame.at<cv::Vec3b>(i, j) == image.at<cv::Vec3b>(i, j));
+            }
+        }
+    }
+    // The caller's image is not modified.
+    CHECK(countColour(image, sc::kVerticalSeamColour) == 0);
+}
+
+// During the height pass the loop works on the transposed image. The frame must turn
+// it back, so the seam appears as a yellow line running left to right.
+static void testFrameShowsHorizontalSeam() {
+    cv::Mat upright(4, 5, CV_8UC3);  // 4 rows, 5 columns, as the user sees it
+    cv::randu(upright, cv::Scalar(60, 60, 60), cv::Scalar(200, 200, 200));
+    cv::Mat transposed;
+    cv::transpose(upright, transposed);  // 5 rows, 4 columns, as the observer receives it
+
+    // In the transposed image the seam has one entry per row, which is one per column
+    // of the upright image: seam[c] is the upright row removed from upright column c.
+    const sc::Seam seam = {3, 2, 2, 1, 0};
+    const cv::Mat frame = sc::drawSeamFrame(transposed, seam, true, cv::Size(5, 4));
+
+    CHECK(frame.cols == 5 && frame.rows == 4);
+    CHECK(countColour(frame, sc::kHorizontalSeamColour) == 5);
+    CHECK(countColour(frame, sc::kVerticalSeamColour) == 0);
+    for (int c = 0; c < upright.cols; ++c) {
+        for (int r = 0; r < upright.rows; ++r) {
+            if (r == seam[c]) {
+                CHECK(frame.at<cv::Vec3b>(r, c) == sc::kHorizontalSeamColour);
+            } else {
+                CHECK(frame.at<cv::Vec3b>(r, c) == upright.at<cv::Vec3b>(r, c));
+            }
+        }
+    }
+}
+
+static void testFrameInputChecks() {
+    cv::Mat image(4, 5, CV_8UC3);
+    cv::randu(image, cv::Scalar(60, 60, 60), cv::Scalar(200, 200, 200));
+
+    // An empty seam paints nothing: this is how the final frame is drawn.
+    const cv::Mat plain = sc::drawSeamFrame(image, sc::Seam{}, false, cv::Size(5, 4));
+    CHECK(cv::norm(plain, image, cv::NORM_INF) == 0.0);
+
+    // A grayscale image gives a colour frame.
+    cv::Mat gray(4, 5, CV_8UC1);
+    cv::randu(gray, cv::Scalar(60), cv::Scalar(200));
+    const cv::Mat grayFrame = sc::drawSeamFrame(gray, sc::Seam{0, 0, 0, 0}, false, cv::Size(5, 4));
+    CHECK(grayFrame.type() == CV_8UC3 && countColour(grayFrame, sc::kVerticalSeamColour) == 4);
+
+    // Used as an observer, it produces one same-sized frame for every seam of a resize.
+    const cv::Mat big = makeNoiseImage();  // 20 rows x 30 columns
+    int frames = 0;
+    bool sizesCorrect = true;
+    const sc::SeamObserver observer = [&](const cv::Mat& current, const sc::Seam& seam,
+                                          bool horizontal) {
+        const cv::Mat frame = sc::drawSeamFrame(current, seam, horizontal, big.size());
+        if (frame.size() != big.size()) sizesCorrect = false;
+        ++frames;
+    };
+    sc::seamCarve(big, 17, 9, sc::findVerticalSeamDP, sc::EnergyMode::PerChannel, nullptr, observer);
+    CHECK(frames == 24 && sizesCorrect);
+
+    // Invalid input is rejected.
+    bool threwEmpty = false, threwLength = false, threwColumn = false, threwCanvas = false,
+         threwType = false;
+    try { sc::drawSeamFrame(cv::Mat(), sc::Seam{}, false, cv::Size(5, 4)); }
+    catch (const std::invalid_argument&) { threwEmpty = true; }
+    try { sc::drawSeamFrame(image, sc::Seam{0, 0}, false, cv::Size(5, 4)); }
+    catch (const std::invalid_argument&) { threwLength = true; }
+    try { sc::drawSeamFrame(image, sc::Seam{0, 0, 9, 0}, false, cv::Size(5, 4)); }
+    catch (const std::invalid_argument&) { threwColumn = true; }
+    try { sc::drawSeamFrame(image, sc::Seam{}, false, cv::Size(4, 4)); }
+    catch (const std::invalid_argument&) { threwCanvas = true; }
+    try { sc::drawSeamFrame(cv::Mat(4, 5, CV_32FC3, cv::Scalar(0, 0, 0)), sc::Seam{}, false, cv::Size(5, 4)); }
+    catch (const std::invalid_argument&) { threwType = true; }
+    CHECK(threwEmpty && threwLength && threwColumn && threwCanvas && threwType);
+}
+
 // ---------------------------------------------------------------------------
 // Test list and runner
 // ---------------------------------------------------------------------------
@@ -725,6 +839,10 @@ static const std::vector<TestCase> allTests = {
     {"overlay_both_directions",             testOverlayBothDirections},
     {"overlay_matches_plain_resize",        testOverlayMatchesPlainResize},
     {"overlay_input_checks",                testOverlayInputChecks},
+    {"overlay_passes_seams_on",             testOverlayPassesSeamsOn},
+    {"frame_shows_vertical_seam",           testFrameShowsVerticalSeam},
+    {"frame_shows_horizontal_seam",         testFrameShowsHorizontalSeam},
+    {"frame_input_checks",                  testFrameInputChecks},
 };
 
 // Used by the CTest entry "test_list_is_complete": succeeds only if the names passed in

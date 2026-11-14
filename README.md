@@ -1,5 +1,7 @@
 # Seam-Carving (Assignment 2)
 
+[![CI](https://github.com/kwan-c/AlgorithmA2_SeamCarving/actions/workflows/ci.yml/badge.svg)](https://github.com/kwan-c/AlgorithmA2_SeamCarving/actions/workflows/ci.yml)
+
 Content-aware image resizing in C++17 with OpenCV (used only for image I/O, grayscale conversion and the Sobel filter).
 
 ## Layout
@@ -9,9 +11,10 @@ include/seam_carving.hpp      public functions
 src/seam_carving.cpp          energy map, DP and greedy seam finders, seam removal, resize loop
 src/seam_graph_cut.cpp        graph cut seam finder (builds the flow network, reads the seam off the cut)
 src/max_flow.cpp              flow network with two maximum-flow algorithms (Edmonds-Karp and Dinic)
-src/seam_overlay.cpp          paints the removed seams onto the original image
+src/seam_overlay.cpp          visualization: paints the removed seams onto the original image, draws step-by-step frames
 src/main.cpp                  command-line app
 tests/test_seam_carving.cpp   unit tests (run by CTest)
+.github/workflows/ci.yml      continuous integration: build, test and sample run on every push
 ```
 
 ## Requirements
@@ -28,7 +31,7 @@ tests/test_seam_carving.cpp   unit tests (run by CTest)
 cmake -S . -B build
 cmake --build build
 ctest --test-dir build --output-on-failure
-./build/seam_carve <image name> <target width> <target height> [dp|greedy|graphcut|graphcut-dinic] [rgb|gray] [seams]
+./build/seam_carve <image name> <target width> <target height> [dp|greedy|graphcut|graphcut-dinic] [rgb|gray] [seams] [frames]
 ```
 
 The target size must be between 1 and the current size in each dimension (this version only shrinks images).
@@ -65,6 +68,20 @@ Example: `./build/seam_carve castle.png 400 450 dp seams` writes `images/out/cas
 
 Painting the seams adds a little bookkeeping to the run, so leave `seams` off when measuring running time.
 
+### Step-by-step frames
+
+Add `frames` to also save one picture per seam, showing each seam just before it is removed (vertical seams in red, horizontal seams in yellow), followed by one picture of the final image. The pictures go in a folder next to the result, named after it with `_frames` added, as `frame_0001.png`, `frame_0002.png` and so on. Every frame has the size of the original image, with the shrinking picture in its top-left corner.
+
+Example: `./build/seam_carve castle.png 400 450 dp frames` writes the frames to `images/out/castle_400x450_dp_rgb_frames/`.
+
+To join the frames into a video with ffmpeg:
+
+```
+ffmpeg -framerate 30 -i images/out/castle_400x450_dp_rgb_frames/frame_%04d.png -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -pix_fmt yuv420p steps.mp4
+```
+
+Writing the frames makes the run several times slower, so leave `frames` off when measuring running time.
+
 ### Energy function
 
 | Option | Energy | Notes |
@@ -73,3 +90,7 @@ Painting the seams adds a little bookkeeping to the run, so leave `seams` off wh
 | `gray` | Sobel on the grayscale image | About a third of the filtering work, but blind to equal-brightness colour edges |
 
 Example: `./build/seam_carve castle.png 400 450 dp gray` writes `images/out/castle_400x450_dp_gray.png`.
+
+## Continuous integration
+
+Every push to `main` and every pull request runs `.github/workflows/ci.yml` on GitHub Actions. On a clean Ubuntu machine it installs OpenCV, builds the project, runs all the unit tests, and then runs the program on `images/castle.png` with the DP, greedy and graph cut algorithms. A failing test marks the commit as failed. The resized images and seam overlays from that run can be downloaded from the run's page as the `sample-results` artifact.

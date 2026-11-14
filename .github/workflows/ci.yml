@@ -1,0 +1,47 @@
+name: CI
+
+# Runs on every push to main and on every pull request:
+# a clean machine installs OpenCV, builds the project, runs every unit test,
+# then runs the program on the sample image and keeps the results.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Install OpenCV
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libopencv-dev
+
+      - name: Configure
+        run: cmake -S . -B build
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      # A failing test makes ctest return an error code, which fails this step
+      # and marks the commit with a red cross on GitHub.
+      - name: Run the unit tests
+        run: ctest --test-dir build --output-on-failure
+
+      # Graph cut is slow, so it only removes three seams here.
+      - name: Run the program on the sample image
+        run: |
+          ./build/seam_carve castle.png 565 450 dp seams
+          ./build/seam_carve castle.png 565 450 greedy seams
+          ./build/seam_carve castle.png 662 450 graphcut-dinic seams
+
+      # The resized images and seam overlays can be downloaded from the run's page.
+      - name: Upload the sample results
+        uses: actions/upload-artifact@v7
+        with:
+          name: sample-results
+          path: images/out/
+          if-no-files-found: error

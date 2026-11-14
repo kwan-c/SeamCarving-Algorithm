@@ -60,6 +60,10 @@ set(SEAM_CARVING_TESTS
   overlay_both_directions
   overlay_matches_plain_resize
   overlay_input_checks
+  overlay_passes_seams_on
+  frame_shows_vertical_seam
+  frame_shows_horizontal_seam
+  frame_input_checks
 )
 foreach(test_name IN LISTS SEAM_CARVING_TESTS)
   add_test(NAME ${test_name} COMMAND test_seam_carving ${test_name})
