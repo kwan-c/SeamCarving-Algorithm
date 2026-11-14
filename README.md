@@ -24,6 +24,9 @@ tests/test_seam_carving.cpp   unit tests (run by CTest)
   - Ubuntu: `sudo apt install libopencv-dev`
   - macOS: `brew install opencv`
   - Windows: `vcpkg install opencv4`, then pass vcpkg's toolchain file to CMake
+- Optional: ffmpeg, only for joining step-by-step frames into a video (see [Step-by-step frames](#step-by-step-frames)). The program itself does not need it.
+  - Ubuntu: `sudo apt install ffmpeg`
+  - macOS: `brew install ffmpeg`
 
 ## Build, test, run
 
@@ -74,10 +77,10 @@ Add `frames` to also save one picture per seam, showing each seam just before it
 
 Example: `./build/seam_carve castle.png 400 450 dp frames` writes the frames to `images/out/castle_400x450_dp_rgb_frames/`.
 
-To join the frames into a video with ffmpeg:
+To join the frames into a video, install ffmpeg (see [Requirements](#requirements)) and run:
 
 ```
-ffmpeg -framerate 30 -i images/out/castle_400x450_dp_rgb_frames/frame_%04d.png -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -pix_fmt yuv420p steps.mp4
+ffmpeg -framerate 30 -i images/out/castle_400x450_dp_rgb_frames/frame_%04d.png -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -pix_fmt yuv420p images/out/castle_steps.mp4
 ```
 
 Writing the frames makes the run several times slower, so leave `frames` off when measuring running time.
