@@ -1,13 +1,16 @@
-// Usage: seam_carve <input image> <output image> <target width> <target height> [rgb|gray]
+// Usage: seam_carve <input image> <output image> <target width> <target height> [options]
 //
-// The optional last argument chooses the energy function:
-//   rgb   Sobel on each colour channel, summed (default)
-//   gray  Sobel on the grayscale image
+// Options, in any order after the four required arguments:
+//   dp      find seams by dynamic programming (default)
+//   greedy  find seams by the greedy row-by-row rule
+//   rgb     energy from Sobel on each colour channel, summed (default)
+//   gray    energy from Sobel on the grayscale image
 
 #include <chrono>
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
+#include <iomanip>
 #include <iostream>
 #include <string>
 #include <system_error>
@@ -18,9 +21,11 @@
 
 static void printUsage(const char* program) {
     std::cerr << "Usage: " << program
-              << " <input> <output> <target width> <target height> [rgb|gray]\n"
-              << "  rgb   energy from each colour channel, summed (default)\n"
-              << "  gray  energy from the grayscale image\n"
+              << " <input> <output> <target width> <target height> [dp|greedy] [rgb|gray]\n"
+              << "  dp      find seams by dynamic programming (default)\n"
+              << "  greedy  find seams by the greedy row-by-row rule\n"
+              << "  rgb     energy from each colour channel, summed (default)\n"
+              << "  gray    energy from the grayscale image\n"
               << "The output folder is created if it does not exist.\n"
               << "An existing output file is overwritten, with a warning.\n";
 }
@@ -69,7 +74,7 @@ static bool ensureOutputFolder(const std::string& outputPath) {
 }
 
 int main(int argc, char** argv) {
-    if (argc != 5 && argc != 6) {
+    if (argc < 5 || argc > 7) {  // four required arguments plus at most two options
         printUsage(argv[0]);
         return EXIT_FAILURE;
     }
@@ -77,15 +82,29 @@ int main(int argc, char** argv) {
     const std::string inputPath = argv[1];
     const std::string outputPath = argv[2];
 
-    // Energy mode: per-channel unless the user asks for grayscale.
+    // Defaults: dynamic programming with per-channel energy.
+    sc::SeamFinder findSeam = sc::findVerticalSeamDP;
+    std::string algorithmName = "dp";
     sc::EnergyMode energyMode = sc::EnergyMode::PerChannel;
     std::string energyName = "rgb";
-    if (argc == 6) {
-        energyName = argv[5];
-        if (energyName == "gray") {
+
+    // Every argument after the first four is an option keyword, in any order.
+    for (int i = 5; i < argc; ++i) {
+        const std::string option = argv[i];
+        if (option == "dp") {
+            findSeam = sc::findVerticalSeamDP;
+            algorithmName = option;
+        } else if (option == "greedy") {
+            findSeam = sc::findVerticalSeamGreedy;
+            algorithmName = option;
+        } else if (option == "rgb") {
+            energyMode = sc::EnergyMode::PerChannel;
+            energyName = option;
+        } else if (option == "gray") {
             energyMode = sc::EnergyMode::Grayscale;
-        } else if (energyName != "rgb") {
-            std::cerr << "Unknown energy mode: " << energyName << "\n";
+            energyName = option;
+        } else {
+            std::cerr << "Unknown option: " << option << "\n";
             printUsage(argv[0]);
             return EXIT_FAILURE;
         }
@@ -113,8 +132,9 @@ int main(int argc, char** argv) {
         const int targetHeight = std::stoi(argv[4]);
 
         const auto start = std::chrono::steady_clock::now();
+        sc::CarveStats stats;
         const cv::Mat result = sc::seamCarve(image, targetWidth, targetHeight,
-                                             sc::findVerticalSeamDP, energyMode);
+                                             findSeam, energyMode, &stats);
         const auto stop = std::chrono::steady_clock::now();
         const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start).count();
 
@@ -128,7 +148,10 @@ int main(int argc, char** argv) {
             return EXIT_FAILURE;
         }
         std::cout << image.cols << "x" << image.rows << " -> " << result.cols << "x" << result.rows
-                  << " in " << ms << " ms (energy: " << energyName << ")\n";
+                  << " in " << ms << " ms (algorithm: " << algorithmName
+                  << ", energy: " << energyName << ")\n"
+                  << stats.seamsRemoved << " seams removed, total seam energy "
+                  << std::fixed << std::setprecision(0) << stats.totalSeamEnergy << "\n";
     } catch (const std::exception& error) {
         std::cerr << "Error: " << error.what() << "\n";
         return EXIT_FAILURE;

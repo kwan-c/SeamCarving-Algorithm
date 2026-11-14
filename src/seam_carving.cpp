@@ -86,6 +86,34 @@ Seam findVerticalSeamDP(const cv::Mat& energy) {
     return seam;
 }
 
+// ---------------------------------------------------------------------------
+// Alternative to step (b): greedy seam
+// ---------------------------------------------------------------------------
+Seam findVerticalSeamGreedy(const cv::Mat& energy) {
+    CV_Assert(!energy.empty() && energy.type() == CV_64F);
+    const int rows = energy.rows;
+    const int cols = energy.cols;
+
+    // Start at the cheapest pixel in the top row (the leftmost one if there is a tie).
+    Seam seam(rows);
+    const double* top = energy.ptr<double>(0);
+    int col = static_cast<int>(std::min_element(top, top + cols) - top);
+    seam[0] = col;
+
+    // Walk down one row at a time. The only information used is the energy of the
+    // three pixels directly below the current one: no table, and no looking ahead.
+    // Ties prefer straight down, then left, then right (the same order as the DP backtrack).
+    for (int i = 1; i < rows; ++i) {
+        const double* row = energy.ptr<double>(i);
+        int bestCol = col;
+        if (col > 0 && row[col - 1] < row[bestCol])        bestCol = col - 1;
+        if (col + 1 < cols && row[col + 1] < row[bestCol]) bestCol = col + 1;
+        col = bestCol;
+        seam[i] = col;
+    }
+    return seam;
+}
+
 double seamCost(const cv::Mat& energy, const Seam& seam) {
     CV_Assert(energy.type() == CV_64F && static_cast<int>(seam.size()) == energy.rows);
     double total = 0.0;
@@ -123,12 +151,17 @@ cv::Mat removeVerticalSeam(const cv::Mat& image, const Seam& seam) {
 namespace {
 
 cv::Mat reduceWidth(cv::Mat image, int targetWidth, const SeamFinder& findSeam,
-                    EnergyMode energyMode) {
+                    EnergyMode energyMode, CarveStats* stats) {
     while (image.cols > targetWidth) {
         // The energy map is recomputed every time: removing a seam creates new
         // neighbours, so the old gradients next to the seam are no longer valid.
         const cv::Mat energy = computeEnergy(image, energyMode);
-        image = removeVerticalSeam(image, findSeam(energy));
+        const Seam seam = findSeam(energy);
+        if (stats != nullptr) {
+            stats->seamsRemoved += 1;
+            stats->totalSeamEnergy += seamCost(energy, seam);
+        }
+        image = removeVerticalSeam(image, seam);
     }
     return image;
 }
@@ -136,7 +169,10 @@ cv::Mat reduceWidth(cv::Mat image, int targetWidth, const SeamFinder& findSeam,
 }  // namespace
 
 cv::Mat seamCarve(const cv::Mat& image, int targetWidth, int targetHeight,
-                  const SeamFinder& findSeam, EnergyMode energyMode) {
+                  const SeamFinder& findSeam, EnergyMode energyMode, CarveStats* stats) {
+    if (stats != nullptr) {
+        *stats = CarveStats{};  // start from zero even if the caller reuses the struct
+    }
     if (image.empty()) {
         throw std::invalid_argument("seamCarve: image is empty");
     }
@@ -145,12 +181,12 @@ cv::Mat seamCarve(const cv::Mat& image, int targetWidth, int targetHeight,
         throw std::invalid_argument("seamCarve: target size must be between 1 and the image size");
     }
 
-    cv::Mat result = reduceWidth(image.clone(), targetWidth, findSeam, energyMode);
+    cv::Mat result = reduceWidth(image.clone(), targetWidth, findSeam, energyMode, stats);
 
     // A horizontal seam of an image is a vertical seam of its transpose,
     // so the same code handles both directions.
     cv::Mat transposed = result.t();
-    transposed = reduceWidth(transposed, targetHeight, findSeam, energyMode);
+    transposed = reduceWidth(transposed, targetHeight, findSeam, energyMode, stats);
     return transposed.t();
 }
 

@@ -25,4 +25,28 @@ target_link_libraries(seam_carve PRIVATE seamcarving)
 enable_testing()
 add_executable(test_seam_carving tests/test_seam_carving.cpp)
 target_link_libraries(test_seam_carving PRIVATE seamcarving)
-add_test(NAME seam_carving_tests COMMAND test_seam_carving)
+
+# Each name below is one test in tests/test_seam_carving.cpp. Registering them one by one
+# makes CTest report every test on its own line, so a failure points at a specific test.
+set(SEAM_CARVING_TESTS
+  dp_hand_worked_example
+  dp_matches_brute_force
+  dp_edge_cases
+  greedy_hand_worked_example
+  greedy_matches_dp_on_easy_input
+  greedy_never_beats_dp
+  greedy_edge_cases
+  remove_vertical_seam
+  energy_both_modes
+  energy_equal_brightness_colour_edge
+  resize_reaches_target_size
+  resize_statistics
+  resize_rejects_invalid_input
+)
+foreach(test_name IN LISTS SEAM_CARVING_TESTS)
+  add_test(NAME ${test_name} COMMAND test_seam_carving ${test_name})
+endforeach()
+
+# Fails if the list above and the list inside the test program ever get out of step.
+add_test(NAME test_list_is_complete
+         COMMAND test_seam_carving --check-names ${SEAM_CARVING_TESTS})

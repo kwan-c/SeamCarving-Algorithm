@@ -25,20 +25,31 @@ tests/test_seam_carving.cpp   unit tests (run by CTest)
 cmake -S . -B build
 cmake --build build
 ctest --test-dir build --output-on-failure
-./build/seam_carve input.jpg output.jpg <target width> <target height> [rgb|gray]
+./build/seam_carve input.jpg output.jpg <target width> <target height> [dp|greedy] [rgb|gray]
 ```
 
 The target size must be between 1 and the current size in each dimension (this version only shrinks images).
 
 The output folder is created if it does not exist. The output file name needs an image extension such as `.png` or `.jpg`. An existing output file is overwritten, and the program prints a warning first.
 
-## Energy function
+## Options
 
-The optional last argument selects how the energy map is computed:
+Option keywords go after the four required arguments, in any order.
+
+### Seam-finding algorithm
+
+| Option | Algorithm | Notes |
+|---|---|---|
+| `dp` (default) | Dynamic programming | Always finds the minimum-energy seam |
+| `greedy` | Row-by-row greedy choice | Finds a seam faster, but not always the cheapest one |
+
+After each run the program prints the number of seams removed and their total energy, so the algorithms can be compared.
+
+### Energy function
 
 | Option | Energy | Notes |
 |---|---|---|
 | `rgb` (default) | Sobel on each colour channel, summed over B, G and R | Detects edges between colours of equal brightness |
 | `gray` | Sobel on the grayscale image | About a third of the filtering work, but blind to equal-brightness colour edges |
 
-Example: `./build/seam_carve images/castle.png images/out/castle_gray.png 400 450 rgb`
+Example: `./build/seam_carve images/castle.png images/out/castle_gray.png 400 450 dp rgb`
