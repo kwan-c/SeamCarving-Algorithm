@@ -80,7 +80,7 @@ Example: `./build/seam_carve castle.png 400 450 dp frames` writes the frames to 
 To join the frames into a video, install ffmpeg (see [Requirements](#requirements)) and run:
 
 ```
-ffmpeg -framerate 30 -i images/out/castle_400x450_dp_rgb_frames/frame_%04d.png -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -pix_fmt yuv420p images/out/castle_steps.mp4
+ffmpeg -framerate 10 -i images/out/castle_400x450_dp_rgb_frames/frame_%04d.png -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -pix_fmt yuv420p images/out/castle_steps.mp4
 ```
 
 Writing the frames makes the run several times slower, so leave `frames` off when measuring running time.
