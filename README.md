@@ -1,4 +1,4 @@
-# Seam-Carving (Assignment 2)
+# Seam-Carving
 
 [![CI](https://github.com/kwan-c/AlgorithmA2_SeamCarving/actions/workflows/ci.yml/badge.svg)](https://github.com/kwan-c/AlgorithmA2_SeamCarving/actions/workflows/ci.yml)
 
